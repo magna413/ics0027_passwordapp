@@ -1,6 +1,7 @@
 // middleware.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { CSRF_COOKIE, issueCsrfToken } from '@/lib/csrf';
+import { checkRateLimitResponse, createRateLimitKey, getClientIp, RATE_LIMIT_CONFIGS } from '@/lib/middleware-ratelimit';
 
 function isApiRoute(pathname: string) {
   return pathname.startsWith('/api');
@@ -47,6 +48,28 @@ export function middleware(request: NextRequest) {
 
   // Let NextAuth do its own CSRF/state checks
   if (isNextAuthRoute(pathname)) return NextResponse.next();
+
+  // Rate limiting for sensitive auth endpoints
+  if (isStateChanging(request.method)) {
+    let rateLimitConfig: typeof RATE_LIMIT_CONFIGS.AUTH_LOGIN | null = null;
+
+    if (pathname.startsWith('/api/opaque/login')) {
+      rateLimitConfig = RATE_LIMIT_CONFIGS.AUTH_LOGIN;
+    } else if (pathname.startsWith('/api/opaque/register')) {
+      rateLimitConfig = RATE_LIMIT_CONFIGS.AUTH_REGISTER;
+    } else if (pathname.startsWith('/api/auth/totp-verify')) {
+      rateLimitConfig = RATE_LIMIT_CONFIGS.AUTH_TOTP;
+    } else if (pathname.startsWith('/api/opaque/change-password')) {
+      rateLimitConfig = RATE_LIMIT_CONFIGS.PASSWORD_CHANGE;
+    }
+
+    if (rateLimitConfig) {
+      const rateLimitResponse = checkRateLimitResponse(request, pathname, rateLimitConfig);
+      if (rateLimitResponse) {
+        return rateLimitResponse;
+      }
+    }
+  }
 
   // Cheap early block for cross-site state-changing requests at the edge
   if (isStateChanging(request.method) && !sameOrigin(request)) {
